@@ -58,8 +58,16 @@ test('Add patient with visit to queue', async ({ api, page, patient }) => {
     await page.locator('#omrs-workspaces-container').getByRole('button', { name: 'Add patient to queue' }).click();
   });
 
-  await test.step('Then I should see a success message and see the patient in the queue table', async () => {
+  await test.step('Then I should see a success message', async () => {
     await expect(page.getByText(/Queue entry added successfully/i)).toBeVisible();
+  });
+
+  // The table polls a minute out, and the refetch on create can be aborted as the workspace closes
+  await test.step('When I reload the page', async () => {
+    await page.reload();
+  });
+
+  await test.step('Then I should see the patient in the queue table', async () => {
     await expect(page.getByRole('link', { name: `${firstName} ${lastName}` })).toBeVisible();
   });
 

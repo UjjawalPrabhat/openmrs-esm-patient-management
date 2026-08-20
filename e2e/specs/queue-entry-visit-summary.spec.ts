@@ -107,7 +107,9 @@ test('Edit an encounter from the Previous visit tab of a queue entry', async ({ 
   });
 
   await test.step('Then I should see the encounter recorded on that visit', async () => {
-    const encounterRow = page.getByRole('row').filter({ hasText: 'Visit Note' });
+    // Match the encounter's own expandable row: the queue entry's expanded row wraps this table, so a bare
+    // row filter matches that too.
+    const encounterRow = page.getByRole('row', { name: /expand current row/i }).filter({ hasText: 'Visit Note' });
     await expect(encounterRow).toBeVisible();
     await encounterRow.getByRole('button').first().click();
     // Scope to the cell: the queue entry's own expanded row contains this table, so a row-level locator
