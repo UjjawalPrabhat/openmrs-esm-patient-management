@@ -1,4 +1,4 @@
-/* eslint-disable playwright/expect-expect */
+/* eslint-disable playwright/expect-expect, playwright/no-conditional-in-test */
 import dayjs from 'dayjs';
 import { type Visit } from '@openmrs/esm-framework';
 import { test } from '../core';
