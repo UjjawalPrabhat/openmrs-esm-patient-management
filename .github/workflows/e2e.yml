@@ -54,6 +54,10 @@ jobs:
       - name: 🧪 Run E2E tests
         run: yarn playwright test e2e/specs/queue-entry-rep-probe.spec.ts --workers=1
 
+      - name: 📜 Dump server logs
+        if: always()
+        run: for c in $(docker ps -q); do echo "=== $c ==="; docker logs --tail 120 "$c" 2>&1 | tail -120; done
+
       - name: 🛑 Stop dev server
         if: '!cancelled()'
         run: docker stop $(docker ps -a -q)

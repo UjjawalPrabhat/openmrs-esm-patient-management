@@ -146,13 +146,13 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
   await page.goto(`${process.env.E2E_BASE_URL}/spa/home/appointments`);
 
   const results = await page.evaluate(
-    async ({ rep, status, location }) => {
-      const probe = async (name: string, url: string) => {
+    async ({ rep, status, location, credentials }) => {
+      const probe = async (name: string, url: string, init: RequestInit = {}) => {
         const start = performance.now();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 15_000);
         try {
-          const res = await fetch(url, { signal: controller.signal });
+          const res = await fetch(url, { ...init, signal: controller.signal });
           const body = await res.text();
           return `${name}: ${res.status} in ${Math.round(performance.now() - start)}ms, ${body.length} bytes`;
         } catch (error) {
@@ -163,19 +163,27 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
       };
 
       const base = `/openmrs/ws/rest/v1/queue-entry?v=${encodeURIComponent(rep)}&totalCount=true&location=${location}&isEnded=false`;
-      const single = await probe('1. single no-status query', base);
-      const concurrent = await Promise.all([
-        probe('2a. concurrent no-status', `${base}&probe=a`),
-        probe('2b. concurrent no-status', `${base}&probe=b`),
-      ]);
+      const minimal = `/openmrs/ws/rest/v1/queue-entry?v=custom:(uuid)&totalCount=true&location=${location}&isEnded=false`;
       return [
-        `service worker controlling the page: ${Boolean(navigator.serviceWorker?.controller)}`,
-        single,
-        ...concurrent,
-        await probe('3. with status', `${base}&status=${status}`),
+        await probe('1. cookie session, branch rep, no status', base),
+        await probe('2. cookie session, custom:(uuid), no status', minimal),
+        await probe('3. cookie session, no location, no status', '/openmrs/ws/rest/v1/queue-entry?isEnded=false'),
+        await probe('4. basic auth, no cookie, no status', base, {
+          credentials: 'omit',
+          headers: { Authorization: `Basic ${btoa(`${credentials.username}:${credentials.password}`)}` },
+        }),
+        await probe('5. cookie session, with status', `${base}&status=${status}`),
       ];
     },
-    { rep: branchRep, status: waitingStatus, location: outpatientClinic },
+    {
+      rep: branchRep,
+      status: waitingStatus,
+      location: outpatientClinic,
+      credentials: {
+        username: process.env.E2E_USER_ADMIN_USERNAME,
+        password: process.env.E2E_USER_ADMIN_PASSWORD,
+      },
+    },
   );
 
   await api.delete(`queue-entry/${queueEntry.uuid}`);
