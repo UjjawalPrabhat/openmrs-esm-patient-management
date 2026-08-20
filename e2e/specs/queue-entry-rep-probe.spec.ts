@@ -53,6 +53,23 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
     })
   ).json();
 
+  const results: string[] = [];
+
+  const bare = async (label: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?totalCount=true&location=${outpatientClinic}&isEnded=false`, {
+        timeout: 15_000,
+      });
+      const body = await res.text();
+      results.push(`${label}: ${res.status()} in ${Date.now() - start}ms, ${body.length} bytes`);
+    } catch (error) {
+      results.push(`${label}: FAILED after ${Date.now() - start}ms`);
+    }
+  };
+
+  await bare('no status, BEFORE creating the entry');
+
   const queueEntry = await (
     await api.post('queue-entry', {
       data: {
@@ -65,8 +82,6 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
       },
     })
   ).json();
-
-  const results: string[] = [];
 
   for (const probe of probes) {
     const params = new URLSearchParams();
@@ -93,6 +108,7 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
   }
 
   await api.delete(`queue-entry/${queueEntry.uuid}`);
+  await bare('no status, AFTER voiding the entry');
   await api.delete(`visit/${visit.uuid}`);
 
   // eslint-disable-next-line no-console
