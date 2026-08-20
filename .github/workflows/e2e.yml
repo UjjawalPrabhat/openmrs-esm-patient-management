@@ -52,11 +52,7 @@ jobs:
         run: while [[ "$(curl -s -o /dev/null -w ''%{http_code}'' http://localhost:8080/openmrs/login.htm)" != "200" ]]; do sleep 10; done
 
       - name: 🧪 Run E2E tests
-        run: yarn playwright test e2e/specs/service-queues.spec.ts
-
-      - name: 📜 Dump server logs
-        if: always()
-        run: for c in $(docker ps -q); do echo "=== $c ==="; docker logs --tail 120 "$c" 2>&1 | tail -120; done
+        run: yarn playwright test --workers=1
 
       - name: 🛑 Stop dev server
         if: '!cancelled()'
