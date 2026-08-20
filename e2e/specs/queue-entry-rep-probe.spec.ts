@@ -191,22 +191,22 @@ test('Probe the app page while querying from outside the browser', async ({ api,
     })
   ).json();
 
-  const pageRequests: string[] = [];
-  page.on('requestfinished', async (request) => {
-    if (request.url().includes('/queue-entry?')) {
-      const timing = request.timing();
-      pageRequests.push(
-        `app request FINISHED in ${Math.round(timing.responseEnd)}ms: ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
-      );
+  const pending = new Map<string, number>();
+  const finished: string[] = [];
+  const label = (url: string) =>
+    url
+      .replace(/^.*\/ws\//, 'ws/')
+      .replace(/v=[^&]*/, 'v=\u2026')
+      .slice(0, 150);
+  page.on('request', (request) => pending.set(request.url(), Date.now()));
+  page.on('requestfinished', (request) => {
+    const started = pending.get(request.url());
+    pending.delete(request.url());
+    if (request.url().includes('/ws/') && started) {
+      finished.push(`finished in ${Date.now() - started}ms: ${label(request.url())}`);
     }
   });
-  page.on('requestfailed', (request) => {
-    if (request.url().includes('/queue-entry?')) {
-      pageRequests.push(
-        `app request FAILED (${request.failure()?.errorText}): ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
-      );
-    }
-  });
+  page.on('requestfailed', (request) => pending.delete(request.url()));
 
   await page.goto(`${process.env.E2E_BASE_URL}/spa/home/service-queues`);
   await page.waitForTimeout(20_000);
@@ -220,6 +220,10 @@ test('Probe the app page while querying from outside the browser', async ({ api,
       return `${label}: FAILED after ${Date.now() - start}ms`;
     }
   };
+
+  const stillPending = [...pending.entries()]
+    .filter(([url]) => url.includes('/ws/'))
+    .map(([url, started]) => `STILL PENDING after ${Date.now() - started}ms: ${label(url)}`);
 
   const outside = [
     await timed(
@@ -237,5 +241,7 @@ test('Probe the app page while querying from outside the browser', async ({ api,
   await api.delete(`visit/${visit.uuid}`);
 
   // eslint-disable-next-line no-console
-  console.log(['', 'IN-PAGE PROBE RESULTS', ...pageRequests, ...outside, ''].join('\n'));
+  console.log(
+    ['', 'IN-PAGE PROBE RESULTS', ...stillPending, ...outside, `${finished.length} requests finished`, ''].join('\n'),
+  );
 });
