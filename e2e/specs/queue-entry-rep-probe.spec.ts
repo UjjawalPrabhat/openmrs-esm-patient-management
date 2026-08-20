@@ -1,4 +1,4 @@
-/* eslint-disable playwright/expect-expect, playwright/no-conditional-in-test */
+/* eslint-disable playwright/expect-expect, playwright/no-conditional-in-test, playwright/no-wait-for-timeout */
 import dayjs from 'dayjs';
 import { type Visit } from '@openmrs/esm-framework';
 import { test } from '../core';
@@ -148,8 +148,8 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
   console.log(['', 'QUEUE ENTRY REP PROBE RESULTS', ...results, ''].join('\n'));
 });
 
-// Same two queries, issued from the page so a service worker or the browser itself is in the path.
-test('Probe the same queries from inside the browser', async ({ api, page, patient }) => {
+// With the app running in the page, watch its own requests and probe the server from outside the browser.
+test('Probe the app page while querying from outside the browser', async ({ api, page, patient }) => {
   const visit: Visit = await (
     await api.post('visit', {
       data: {
@@ -175,53 +175,51 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
     })
   ).json();
 
-  // A page where the service queues app is not mounted, so the only queue-entry traffic is this probe's
-  await page.goto(`${process.env.E2E_BASE_URL}/spa/home/appointments`);
+  const pageRequests: string[] = [];
+  page.on('requestfinished', async (request) => {
+    if (request.url().includes('/queue-entry?')) {
+      const timing = request.timing();
+      pageRequests.push(
+        `app request FINISHED in ${Math.round(timing.responseEnd)}ms: ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
+      );
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (request.url().includes('/queue-entry?')) {
+      pageRequests.push(
+        `app request FAILED (${request.failure()?.errorText}): ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
+      );
+    }
+  });
 
-  const results = await page.evaluate(
-    async ({ rep, status, location, credentials }) => {
-      const probe = async (name: string, url: string, init: RequestInit = {}) => {
-        const start = performance.now();
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 15_000);
-        try {
-          const res = await fetch(url, { ...init, signal: controller.signal });
-          const body = await res.text();
-          return `${name}: ${res.status} in ${Math.round(performance.now() - start)}ms, ${body.length} bytes`;
-        } catch (error) {
-          return `${name}: FAILED after ${Math.round(performance.now() - start)}ms — ${(error as Error).name}`;
-        } finally {
-          clearTimeout(timer);
-        }
-      };
+  await page.goto(`${process.env.E2E_BASE_URL}/spa/home/service-queues`);
+  await page.waitForTimeout(20_000);
 
-      const base = `/openmrs/ws/rest/v1/queue-entry?v=${encodeURIComponent(rep)}&totalCount=true&location=${location}&isEnded=false`;
-      const minimal = `/openmrs/ws/rest/v1/queue-entry?v=custom:(uuid)&totalCount=true&location=${location}&isEnded=false`;
-      return [
-        await probe('1. cookie session, branch rep, no status', base),
-        await probe('2. cookie session, custom:(uuid), no status', minimal),
-        await probe('3. cookie session, no location, no status', '/openmrs/ws/rest/v1/queue-entry?isEnded=false'),
-        await probe('4. basic auth, no cookie, no status', base, {
-          credentials: 'omit',
-          headers: { Authorization: `Basic ${btoa(`${credentials.username}:${credentials.password}`)}` },
-        }),
-        await probe('5. cookie session, with status', `${base}&status=${status}`),
-      ];
-    },
-    {
-      rep: branchRep,
-      status: waitingStatus,
-      location: outpatientClinic,
-      credentials: {
-        username: process.env.E2E_USER_ADMIN_USERNAME,
-        password: process.env.E2E_USER_ADMIN_PASSWORD,
-      },
-    },
-  );
+  const timed = async (label: string, query: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?${query}`, { timeout: 20_000 });
+      return `${label}: ${res.status()} in ${Date.now() - start}ms, ${(await res.text()).length} bytes`;
+    } catch {
+      return `${label}: FAILED after ${Date.now() - start}ms`;
+    }
+  };
+
+  const outside = [
+    await timed(
+      'outside browser, no status, with location',
+      `totalCount=true&location=${outpatientClinic}&isEnded=false`,
+    ),
+    await timed('outside browser, no status, no location', `totalCount=true&isEnded=false`),
+    await timed(
+      'outside browser, with status',
+      `totalCount=true&location=${outpatientClinic}&isEnded=false&status=${waitingStatus}`,
+    ),
+  ];
 
   await api.delete(`queue-entry/${queueEntry.uuid}`);
   await api.delete(`visit/${visit.uuid}`);
 
   // eslint-disable-next-line no-console
-  console.log(['', 'IN-PAGE PROBE RESULTS', ...results, ''].join('\n'));
+  console.log(['', 'IN-PAGE PROBE RESULTS', ...pageRequests, ...outside, ''].join('\n'));
 });
