@@ -142,7 +142,8 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
     })
   ).json();
 
-  await page.goto(`${process.env.E2E_BASE_URL}/spa/home/service-queues`);
+  // A page where the service queues app is not mounted, so the only queue-entry traffic is this probe's
+  await page.goto(`${process.env.E2E_BASE_URL}/spa/home/appointments`);
 
   const results = await page.evaluate(
     async ({ rep, status, location }) => {
@@ -162,13 +163,16 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
       };
 
       const base = `/openmrs/ws/rest/v1/queue-entry?v=${encodeURIComponent(rep)}&totalCount=true&location=${location}&isEnded=false`;
+      const single = await probe('1. single no-status query', base);
+      const concurrent = await Promise.all([
+        probe('2a. concurrent no-status', `${base}&probe=a`),
+        probe('2b. concurrent no-status', `${base}&probe=b`),
+      ]);
       return [
         `service worker controlling the page: ${Boolean(navigator.serviceWorker?.controller)}`,
-        await probe('1. no status (first)', base),
-        await probe('2. session (after the stall)', '/openmrs/ws/rest/v1/session'),
+        single,
+        ...concurrent,
         await probe('3. with status', `${base}&status=${status}`),
-        await probe('4. no status (again)', base),
-        await probe('5. no status, cache no-store', `${base}&probe=1`),
       ];
     },
     { rep: branchRep, status: waitingStatus, location: outpatientClinic },
