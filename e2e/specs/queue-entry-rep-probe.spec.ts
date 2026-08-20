@@ -1,0 +1,241 @@
+/* eslint-disable playwright/expect-expect, playwright/no-conditional-in-test, playwright/no-wait-for-timeout */
+import dayjs from 'dayjs';
+import { type Visit } from '@openmrs/esm-framework';
+import { test } from '../core';
+
+// TEMPORARY DIAGNOSTIC — delete once the stalled queue table query is understood.
+// The queue table's `queue-entry?…&isEnded=false` request never returns once a matching entry exists,
+// while the same request with `&status=` answers in about a second. This probes the endpoint directly
+// with several representations to find which part of the query stalls.
+
+const outpatientClinic = '44c3efb0-2583-4c80-a79e-1f756a03c0a1';
+const facilityVisitType = '7b0f5697-27e3-40c4-8bae-f4049abfb4ed';
+const outpatientConsultationQueue = '13b656d3-e141-11ee-bad2-0242ac120002';
+const notUrgentPriority = 'f4620bfa-3625-4883-bd3f-84c2cce14470';
+const waitingStatus = '51ae5e4d-b72b-4912-bf31-a17efb690aeb';
+const omrsDatetime = 'YYYY-MM-DDTHH:mm:ss.SSSZZ';
+
+const branchRep =
+  'custom:(uuid,display,queue:(uuid,display,name),status:(uuid,display),patient:(uuid,display,person:(uuid,display,age,birthdate,gender),identifiers:(uuid,identifier,identifierType:(uuid,display))),visit:(uuid,startDatetime,attributes:(uuid,value,attributeType:(uuid))),priority:(uuid,display),priorityComment,sortWeight,startedAt,endedAt,queueComingFrom:(uuid,display),previousQueueEntry:(uuid,startedAt,status:(uuid,display)))';
+
+const mainRep =
+  'custom:(uuid,display,queue,status,patient:(uuid,display,person,identifiers:(uuid,display,identifier,identifierType)),visit:(uuid,display,startDatetime,encounters:(uuid,display,diagnoses,encounterDatetime,encounterType,obs,encounterProviders,voided),attributes:(uuid,display,value,attributeType)),priority,priorityComment,sortWeight,startedAt,endedAt,locationWaitingFor,queueComingFrom,providerWaitingFor,previousQueueEntry)';
+
+const withoutPreviousQueueEntry = branchRep.replace(',previousQueueEntry:(uuid,startedAt,status:(uuid,display))', '');
+const withoutVisit = branchRep.replace(',visit:(uuid,startDatetime,attributes:(uuid,value,attributeType:(uuid)))', '');
+const withoutPatient = branchRep.replace(
+  ',patient:(uuid,display,person:(uuid,display,age,birthdate,gender),identifiers:(uuid,identifier,identifierType:(uuid,display)))',
+  '',
+);
+
+const probes: Array<{ name: string; rep?: string; status?: boolean; totalCount?: boolean }> = [
+  { name: 'branch rep, with status (control)', rep: branchRep, status: true },
+  { name: 'branch rep, no status', rep: branchRep },
+  { name: 'branch rep, no status, no totalCount', rep: branchRep, totalCount: false },
+  { name: 'main rep, no status', rep: mainRep },
+  { name: 'branch rep minus previousQueueEntry', rep: withoutPreviousQueueEntry },
+  { name: 'branch rep minus visit', rep: withoutVisit },
+  { name: 'branch rep minus patient', rep: withoutPatient },
+  { name: 'custom:(uuid) only', rep: 'custom:(uuid)' },
+  { name: 'no v param', rep: undefined },
+];
+
+test('Probe which queue-entry representation stalls', async ({ api, patient }) => {
+  const visit: Visit = await (
+    await api.post('visit', {
+      data: {
+        startDatetime: dayjs().format(omrsDatetime),
+        patient: patient.uuid,
+        location: outpatientClinic,
+        visitType: facilityVisitType,
+        attributes: [],
+      },
+    })
+  ).json();
+
+  const results: string[] = [];
+
+  const bare = async (label: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?totalCount=true&location=${outpatientClinic}&isEnded=false`, {
+        timeout: 15_000,
+      });
+      const body = await res.text();
+      results.push(`${label}: ${res.status()} in ${Date.now() - start}ms, ${body.length} bytes`);
+    } catch (error) {
+      results.push(`${label}: FAILED after ${Date.now() - start}ms`);
+    }
+  };
+
+  await bare('no status, BEFORE creating the entry');
+
+  const queueEntry = await (
+    await api.post('queue-entry', {
+      data: {
+        queue: outpatientConsultationQueue,
+        patient: patient.uuid,
+        visit: visit.uuid,
+        priority: notUrgentPriority,
+        status: waitingStatus,
+        startedAt: dayjs().format(omrsDatetime),
+      },
+    })
+  ).json();
+
+  for (const probe of probes) {
+    const params = new URLSearchParams();
+    if (probe.rep) {
+      params.append('v', probe.rep);
+    }
+    if (probe.totalCount !== false) {
+      params.append('totalCount', 'true');
+    }
+    params.append('location', outpatientClinic);
+    params.append('isEnded', 'false');
+    if (probe.status) {
+      params.append('status', waitingStatus);
+    }
+
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?${params.toString()}`, { timeout: 15_000 });
+      const body = await res.text();
+      results.push(`${probe.name}: ${res.status()} in ${Date.now() - start}ms, ${body.length} bytes`);
+    } catch (error) {
+      results.push(`${probe.name}: FAILED after ${Date.now() - start}ms — ${(error as Error).message.split('\n')[0]}`);
+    }
+  }
+
+  // Concurrency, still with no browser in the picture
+  const timed = async (label: string, query: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?${query}`, { timeout: 20_000 });
+      return `${label}: ${res.status()} in ${Date.now() - start}ms, ${(await res.text()).length} bytes`;
+    } catch {
+      return `${label}: FAILED after ${Date.now() - start}ms`;
+    }
+  };
+  const noStatus = `totalCount=true&location=${outpatientClinic}&isEnded=false`;
+  const withStatus = `${noStatus}&status=${waitingStatus}`;
+
+  results.push(
+    ...(await Promise.all([
+      timed('concurrent A, no status', noStatus),
+      timed('concurrent B, no status', `${noStatus}&probe=b`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('concurrent A, with status', withStatus),
+      timed('concurrent B, with status', `${withStatus}&probe=b`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('3 concurrent, no status A', `${noStatus}&probe=x`),
+      timed('3 concurrent, no status B', `${noStatus}&probe=y`),
+      timed('3 concurrent, no status C', `${noStatus}&probe=z`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('5 concurrent, no status A', `${noStatus}&probe=1`),
+      timed('5 concurrent, no status B', `${noStatus}&probe=2`),
+      timed('5 concurrent, no status C', `${noStatus}&probe=3`),
+      timed('5 concurrent, no status D', `${noStatus}&probe=4`),
+      timed('5 concurrent, no status E', `${noStatus}&probe=5`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('mixed, no status', `${noStatus}&probe=c`),
+      timed('mixed, with status', `${withStatus}&probe=c`),
+    ])),
+  );
+  results.push(await timed('sequential again, no status', `${noStatus}&probe=d`));
+
+  await api.delete(`queue-entry/${queueEntry.uuid}`);
+  await bare('no status, AFTER voiding the entry');
+  await api.delete(`visit/${visit.uuid}`);
+
+  // eslint-disable-next-line no-console
+  console.log(['', 'QUEUE ENTRY REP PROBE RESULTS', ...results, ''].join('\n'));
+});
+
+// With the app running in the page, watch its own requests and probe the server from outside the browser.
+test('Probe the app page while querying from outside the browser', async ({ api, page, patient }) => {
+  const visit: Visit = await (
+    await api.post('visit', {
+      data: {
+        startDatetime: dayjs().format(omrsDatetime),
+        patient: patient.uuid,
+        location: outpatientClinic,
+        visitType: facilityVisitType,
+        attributes: [],
+      },
+    })
+  ).json();
+
+  const queueEntry = await (
+    await api.post('queue-entry', {
+      data: {
+        queue: outpatientConsultationQueue,
+        patient: patient.uuid,
+        visit: visit.uuid,
+        priority: notUrgentPriority,
+        status: waitingStatus,
+        startedAt: dayjs().format(omrsDatetime),
+      },
+    })
+  ).json();
+
+  const pageRequests: string[] = [];
+  page.on('requestfinished', async (request) => {
+    if (request.url().includes('/queue-entry?')) {
+      const timing = request.timing();
+      pageRequests.push(
+        `app request FINISHED in ${Math.round(timing.responseEnd)}ms: ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
+      );
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (request.url().includes('/queue-entry?')) {
+      pageRequests.push(
+        `app request FAILED (${request.failure()?.errorText}): ${decodeURIComponent(request.url().split('?')[1]).replace(/v=[^&]*/, 'v=…')}`,
+      );
+    }
+  });
+
+  await page.goto(`${process.env.E2E_BASE_URL}/spa/home/service-queues`);
+  await page.waitForTimeout(20_000);
+
+  const timed = async (label: string, query: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?${query}`, { timeout: 20_000 });
+      return `${label}: ${res.status()} in ${Date.now() - start}ms, ${(await res.text()).length} bytes`;
+    } catch {
+      return `${label}: FAILED after ${Date.now() - start}ms`;
+    }
+  };
+
+  const outside = [
+    await timed(
+      'outside browser, no status, with location',
+      `totalCount=true&location=${outpatientClinic}&isEnded=false`,
+    ),
+    await timed('outside browser, no status, no location', `totalCount=true&isEnded=false`),
+    await timed(
+      'outside browser, with status',
+      `totalCount=true&location=${outpatientClinic}&isEnded=false&status=${waitingStatus}`,
+    ),
+  ];
+
+  await api.delete(`queue-entry/${queueEntry.uuid}`);
+  await api.delete(`visit/${visit.uuid}`);
+
+  // eslint-disable-next-line no-console
+  console.log(['', 'IN-PAGE PROBE RESULTS', ...pageRequests, ...outside, ''].join('\n'));
+});
