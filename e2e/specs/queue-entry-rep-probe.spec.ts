@@ -134,6 +134,22 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
   );
   results.push(
     ...(await Promise.all([
+      timed('3 concurrent, no status A', `${noStatus}&probe=x`),
+      timed('3 concurrent, no status B', `${noStatus}&probe=y`),
+      timed('3 concurrent, no status C', `${noStatus}&probe=z`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('5 concurrent, no status A', `${noStatus}&probe=1`),
+      timed('5 concurrent, no status B', `${noStatus}&probe=2`),
+      timed('5 concurrent, no status C', `${noStatus}&probe=3`),
+      timed('5 concurrent, no status D', `${noStatus}&probe=4`),
+      timed('5 concurrent, no status E', `${noStatus}&probe=5`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
       timed('mixed, no status', `${noStatus}&probe=c`),
       timed('mixed, with status', `${withStatus}&probe=c`),
     ])),
