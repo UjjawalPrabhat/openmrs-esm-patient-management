@@ -162,7 +162,14 @@ test('Probe the same queries from inside the browser', async ({ api, page, patie
       };
 
       const base = `/openmrs/ws/rest/v1/queue-entry?v=${encodeURIComponent(rep)}&totalCount=true&location=${location}&isEnded=false`;
-      return [await probe('in-page, with status', `${base}&status=${status}`), await probe('in-page, no status', base)];
+      return [
+        `service worker controlling the page: ${Boolean(navigator.serviceWorker?.controller)}`,
+        await probe('1. no status (first)', base),
+        await probe('2. session (after the stall)', '/openmrs/ws/rest/v1/session'),
+        await probe('3. with status', `${base}&status=${status}`),
+        await probe('4. no status (again)', base),
+        await probe('5. no status, cache no-store', `${base}&probe=1`),
+      ];
     },
     { rep: branchRep, status: waitingStatus, location: outpatientClinic },
   );
