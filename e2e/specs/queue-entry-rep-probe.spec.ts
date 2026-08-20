@@ -107,6 +107,39 @@ test('Probe which queue-entry representation stalls', async ({ api, patient }) =
     }
   }
 
+  // Concurrency, still with no browser in the picture
+  const timed = async (label: string, query: string) => {
+    const start = Date.now();
+    try {
+      const res = await api.get(`queue-entry?${query}`, { timeout: 20_000 });
+      return `${label}: ${res.status()} in ${Date.now() - start}ms, ${(await res.text()).length} bytes`;
+    } catch {
+      return `${label}: FAILED after ${Date.now() - start}ms`;
+    }
+  };
+  const noStatus = `totalCount=true&location=${outpatientClinic}&isEnded=false`;
+  const withStatus = `${noStatus}&status=${waitingStatus}`;
+
+  results.push(
+    ...(await Promise.all([
+      timed('concurrent A, no status', noStatus),
+      timed('concurrent B, no status', `${noStatus}&probe=b`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('concurrent A, with status', withStatus),
+      timed('concurrent B, with status', `${withStatus}&probe=b`),
+    ])),
+  );
+  results.push(
+    ...(await Promise.all([
+      timed('mixed, no status', `${noStatus}&probe=c`),
+      timed('mixed, with status', `${withStatus}&probe=c`),
+    ])),
+  );
+  results.push(await timed('sequential again, no status', `${noStatus}&probe=d`));
+
   await api.delete(`queue-entry/${queueEntry.uuid}`);
   await bare('no status, AFTER voiding the entry');
   await api.delete(`visit/${visit.uuid}`);
